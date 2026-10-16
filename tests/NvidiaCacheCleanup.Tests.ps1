@@ -167,6 +167,7 @@ Describe 'Invoke-NvidiaCacheCleanup' {
     }
 
     It 'only reports targets in DryRun mode' {
+        New-Item -ItemType Directory -Path $script:Logs | Out-Null
         $before = Get-RelativeDir $script:Base
         $summary = Invoke-NvidiaCacheCleanup -Base $script:Base -LogDir $script:Logs -DryRun 6>$null
 
@@ -174,6 +175,14 @@ Describe 'Invoke-NvidiaCacheCleanup' {
         $summary.Targets | Should -Be 6
         $summary.Removed | Should -Be 0
         Get-Content (Join-Path $script:Logs 'nvidia-cache-cleanup.log') -Raw | Should -Match 'DryRun'
+    }
+
+    # Regression: a DryRun before installing created the log folder with the
+    # permissive ProgramData ACL, which the installer then (rightly) refuses.
+    It 'does not create the log folder in DryRun mode' {
+        $summary = Invoke-NvidiaCacheCleanup -Base $script:Base -LogDir $script:Logs -DryRun 6>$null
+        $summary.Targets | Should -Be 6
+        Test-Path $script:Logs | Should -BeFalse
     }
 
     # Regression: a package still being downloaded (recent) used to be treated

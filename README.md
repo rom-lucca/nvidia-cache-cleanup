@@ -43,7 +43,7 @@ Além disso:
 
 1. Baixe o repositório (**Code → Download ZIP**) e extraia, ou use `git clone`.
 2. Abra o **PowerShell como Administrador** dentro da pasta extraída.
-3. (Opcional, recomendado) Veja o que seria apagado, sem apagar nada:
+3. (Opcional, recomendado) Veja o que seria apagado, sem apagar nada. O resultado só aparece na tela, nenhum arquivo é criado:
 
    ```powershell
    Get-ChildItem -Recurse *.ps1 | Unblock-File

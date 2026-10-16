@@ -34,11 +34,11 @@ $script:PostProcessing = 'post-processing'
 
 function Write-NccLog {
     param(
-        [Parameter(Mandatory)][string]$Path,
+        [AllowEmptyString()][string]$Path,
         [Parameter(Mandatory)][string]$Message
     )
     $line = '{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $Message
-    Add-Content -LiteralPath $Path -Value $line
+    if ($Path) { Add-Content -LiteralPath $Path -Value $line }
     Write-Information -MessageData $line -InformationAction Continue
 }
 
@@ -130,8 +130,14 @@ function Invoke-NvidiaCacheCleanup {
         [int]$MinAgeDays = 3,
         [switch]$DryRun
     )
-    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-    $log = Join-Path $LogDir 'nvidia-cache-cleanup.log'
+    # A dry run must not leave anything behind: without an existing log
+    # folder it only prints to the console.
+    if ($DryRun -and -not (Test-Path -LiteralPath $LogDir)) {
+        $log = ''
+    } else {
+        New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+        $log = Join-Path $LogDir 'nvidia-cache-cleanup.log'
+    }
     $summary = [pscustomobject]@{ Kept = @(); Targets = 0; Removed = 0; Failed = 0; FreedBytes = [long]0; Aborted = $null }
 
     if (-not (Test-Path -LiteralPath $Base)) {
