@@ -70,8 +70,8 @@ Além disso:
 |---|---|---|
 | `-WeeksInterval` | `4` | De quantas em quantas semanas rodar (1 a 52) |
 | `-TaskName` | `NvidiaCacheCleanup` | Nome da tarefa agendada |
-| `-InstallDir` | `C:\ProgramData\NvidiaCacheCleanup` | Onde o script e os logs ficam |
-| `-Uninstall` | — | Remove a tarefa e a pasta |
+| `-InstallDir` | `C:\ProgramData\NvidiaCacheCleanup` | Onde o script e os logs ficam. Precisa ser uma pasta nova ou de uma instalação anterior |
+| `-Uninstall` | — | Remove a tarefa e os arquivos da ferramenta (outros arquivos na pasta são preservados) |
 
 ## Desinstalação
 
@@ -81,7 +81,14 @@ powershell -ExecutionPolicy Bypass -File .\src\Install.ps1 -Uninstall
 
 ## Segurança
 
-A tarefa roda como SYSTEM. Por isso o instalador restringe a pasta `C:\ProgramData\NvidiaCacheCleanup`: só SYSTEM e Administradores podem alterá-la, e usuários comuns só podem ler. Assim, nenhum programa sem privilégio consegue trocar o script por outro e ganhar acesso total à máquina.
+A tarefa roda como SYSTEM. Por isso o instalador cria a pasta `C:\ProgramData\NvidiaCacheCleanup` já restrita: só SYSTEM e Administradores podem alterá-la, e usuários comuns só podem ler. Assim, nenhum programa sem privilégio consegue trocar o script por outro e ganhar acesso total à máquina.
+
+O instalador **recusa** a instalação quando a pasta já existe e:
+- pode ser alterada por usuários comuns (alguém pode tê-la preparado para um ataque);
+- é um link (junction/symlink);
+- contém arquivos que não são desta ferramenta.
+
+Nesse caso, apague a pasta como Administrador e rode o instalador de novo.
 
 ## Desenvolvimento
 

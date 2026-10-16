@@ -7,9 +7,13 @@
     scheduled task that runs it as SYSTEM every WeeksInterval weeks (Sunday,
     12:00, or as soon as possible if the PC was off).
 
-    Because the task runs as SYSTEM, InstallDir is locked down so that only
-    SYSTEM and Administrators can change it (Users can only read). Otherwise
-    any unprivileged program could edit the script and gain SYSTEM rights.
+    Because the task runs as SYSTEM, InstallDir must not be writable by regular
+    users, or any unprivileged program could edit the script and gain SYSTEM
+    rights. The installer therefore only accepts:
+      - a folder that does not exist yet: it is created already locked
+        (owner Administrators; SYSTEM/Administrators full control, Users read);
+      - a previous installation: a locked folder, not a link, containing only
+        files that belong to this tool.
 
     Must be run from an elevated (Administrator) PowerShell.
 
@@ -31,6 +35,16 @@ param(
 $script:SidSystem = 'S-1-5-18'
 $script:SidAdministrators = 'S-1-5-32-544'
 $script:SidUsers = 'S-1-5-32-545'
+$script:TrustedSids = @($script:SidSystem, $script:SidAdministrators)
+$script:ScriptFile = 'NvidiaCacheCleanup.ps1'
+$script:MarkerFile = '.nvidia-cache-cleanup'
+$script:LogFolder = 'logs'
+$script:OwnItems = @($script:ScriptFile, $script:MarkerFile, $script:LogFolder)
+
+# Any of these bits lets the holder change the folder or what is inside it
+# (includes the generic GENERIC_ALL / GENERIC_WRITE bits used by inherit-only ACEs).
+$script:WriteRightsMask = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor
+0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000
 
 function Test-NccAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -43,32 +57,65 @@ function Assert-NccAdministrator {
     }
 }
 
-function Invoke-NccAclTool {
-    param([Parameter(Mandatory)][string[]]$Arguments)
-    # With ErrorActionPreference=Stop, Windows PowerShell turns native stderr
-    # into a terminating error before the exit code can be checked.
-    $ErrorActionPreference = 'Continue'
-    $output = & icacls.exe @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "icacls $($Arguments -join ' ') failed with exit code ${LASTEXITCODE}: $($output -join ' ')"
+function Get-NccDirectorySecurity {
+    $security = New-Object System.Security.AccessControl.DirectorySecurity
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner([Security.Principal.SecurityIdentifier]$script:SidAdministrators)
+    $grants = @(
+        @($script:SidSystem, 'FullControl'),
+        @($script:SidAdministrators, 'FullControl'),
+        @($script:SidUsers, 'ReadAndExecute')
+    )
+    foreach ($grant in $grants) {
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            [Security.Principal.SecurityIdentifier]$grant[0], $grant[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        $security.AddAccessRule($rule)
+    }
+    $security
+}
+
+function Initialize-NccInstallDir {
+    param([Parameter(Mandatory)][string]$Path)
+    # The folder is created with its final security descriptor in one call, so
+    # there is no window in which it inherits the permissive ProgramData ACL.
+    $security = Get-NccDirectorySecurity
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        [System.IO.FileSystemAclExtensions]::Create([System.IO.DirectoryInfo]::new($Path), $security)
+    } else {
+        [System.IO.Directory]::CreateDirectory($Path, $security) | Out-Null
     }
 }
 
-function Set-NccSecureAcl {
-    [CmdletBinding(SupportsShouldProcess)]
+function Test-NccLockedAcl {
     param([Parameter(Mandatory)][string]$Path)
-    if (-not $PSCmdlet.ShouldProcess($Path, 'Restrict permissions to SYSTEM and Administrators')) { return }
+    $acl = Get-Acl -LiteralPath $Path
+    if ($script:TrustedSids -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { return $false }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        $writes = ([int64]$rule.FileSystemRights -band $script:WriteRightsMask) -ne 0
+        $allow = $rule.AccessControlType -eq 'Allow'
+        if ($allow -and $writes -and $script:TrustedSids -notcontains $rule.IdentityReference.Value) { return $false }
+    }
+    $true
+}
 
-    # Owner first: a pre-existing folder owned by a regular user would let
-    # that user grant themselves access again.
-    Invoke-NccAclTool -Arguments @($Path, '/setowner', "*$script:SidAdministrators", '/T', '/Q')
-    Invoke-NccAclTool -Arguments @($Path, '/inheritance:r', '/grant:r',
-        "*${script:SidSystem}:(OI)(CI)F",
-        "*${script:SidAdministrators}:(OI)(CI)F",
-        "*${script:SidUsers}:(OI)(CI)RX", '/Q')
-    # Children drop explicit entries and inherit only the rules above.
-    if (Get-ChildItem -LiteralPath $Path -Force | Select-Object -First 1) {
-        Invoke-NccAclTool -Arguments @((Join-Path $Path '*'), '/reset', '/T', '/Q')
+function Assert-NccNotLink {
+    param([Parameter(Mandatory)][string]$Path)
+    if ((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "'$Path' is a link (junction/symlink); refusing to use it."
+    }
+}
+
+function Assert-NccTrustedInstallDir {
+    param([Parameter(Mandatory)][string]$Path)
+    Assert-NccNotLink -Path $Path
+    if (-not (Test-NccLockedAcl -Path $Path)) {
+        throw "'$Path' already exists and can be modified by non-administrators, so it may have been " +
+        'prepared by another user. Delete it (as Administrator) and run the installer again.'
+    }
+    $foreign = @(Get-ChildItem -LiteralPath $Path -Force | Where-Object { $script:OwnItems -notcontains $_.Name })
+    if ($foreign.Count -gt 0) {
+        throw "'$Path' contains files that do not belong to this tool ($($foreign.Name -join ', ')). " +
+        'Choose another -InstallDir.'
     }
 }
 
@@ -81,11 +128,14 @@ function Install-NccTask {
     )
     Assert-NccAdministrator
 
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    # Lock the folder down before copying, so the copied script inherits it.
-    Set-NccSecureAcl -Path $InstallDir
-    $target = Join-Path $InstallDir 'NvidiaCacheCleanup.ps1'
+    if (Test-Path -LiteralPath $InstallDir) {
+        Assert-NccTrustedInstallDir -Path $InstallDir
+    } else {
+        Initialize-NccInstallDir -Path $InstallDir
+    }
+    $target = Join-Path $InstallDir $script:ScriptFile
     Copy-Item -LiteralPath $SourceScript -Destination $target -Force
+    Set-Content -LiteralPath (Join-Path $InstallDir $script:MarkerFile) -Value "Installed $(Get-Date -Format s)"
 
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
         -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$target`""
@@ -102,7 +152,7 @@ function Install-NccTask {
         TaskName = $TaskName
         Script   = $target
         Schedule = "Every $WeeksInterval week(s), Sunday 12:00 (runs late if the PC was off)"
-        Logs     = Join-Path $InstallDir 'logs'
+        Logs     = Join-Path $InstallDir $script:LogFolder
     }
 }
 
@@ -115,9 +165,27 @@ function Uninstall-NccTask {
 
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    } else {
+        Write-Warning "Scheduled task '$TaskName' not found."
     }
-    if (Test-Path -LiteralPath $InstallDir) {
-        Remove-Item -LiteralPath $InstallDir -Recurse -Force
+
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
+        Write-Warning "Folder '$InstallDir' not found."
+        return
+    }
+    Assert-NccNotLink -Path $InstallDir
+    # Only what this tool created is removed; anything else stays.
+    foreach ($item in $script:OwnItems) {
+        $path = Join-Path $InstallDir $item
+        if (Test-Path -LiteralPath $path) {
+            Assert-NccNotLink -Path $path
+            Remove-Item -LiteralPath $path -Recurse -Force
+        }
+    }
+    if (Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 1) {
+        Write-Warning "Folder '$InstallDir' was kept because it contains other files."
+    } else {
+        Remove-Item -LiteralPath $InstallDir -Force
     }
 }
 
@@ -126,7 +194,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
     if ($Uninstall) {
         Uninstall-NccTask -InstallDir $InstallDir -TaskName $TaskName
-        Write-Output "Removed task '$TaskName' and folder '$InstallDir'."
+        Write-Output "Uninstall finished for task '$TaskName' and folder '$InstallDir'."
     } else {
         $source = Join-Path $PSScriptRoot 'NvidiaCacheCleanup.ps1'
         Install-NccTask -SourceScript $source -InstallDir $InstallDir -TaskName $TaskName -WeeksInterval $WeeksInterval |
