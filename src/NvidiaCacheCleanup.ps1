@@ -128,6 +128,7 @@ function Invoke-NvidiaCacheCleanup {
         [Parameter(Mandatory)][string]$Base,
         [Parameter(Mandatory)][string]$LogDir,
         [int]$MinAgeDays = 3,
+        [long]$MaxLogBytes = 1MB,
         [switch]$DryRun
     )
     # A dry run must not leave anything behind: without an existing log
@@ -137,6 +138,10 @@ function Invoke-NvidiaCacheCleanup {
     } else {
         New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
         $log = Join-Path $LogDir 'nvidia-cache-cleanup.log'
+        # Keep one previous log so the file cannot grow forever.
+        if ((Test-Path -LiteralPath $log) -and (Get-Item -LiteralPath $log).Length -gt $MaxLogBytes) {
+            Move-Item -LiteralPath $log -Destination "$log.1" -Force
+        }
     }
     $summary = [pscustomobject]@{ Kept = @(); Targets = 0; Removed = 0; Failed = 0; FreedBytes = [long]0; Aborted = $null }
 

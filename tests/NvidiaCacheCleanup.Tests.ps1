@@ -227,6 +227,18 @@ Describe 'Invoke-NvidiaCacheCleanup' {
         $summary.Aborted | Should -Match 'installer'
     }
 
+    It 'rotates the log file when it grows past the size limit' {
+        New-Item -ItemType Directory -Path $script:Logs | Out-Null
+        $log = Join-Path $script:Logs 'nvidia-cache-cleanup.log'
+        Set-Content -LiteralPath $log -Value ('old line ' * 300)
+
+        Invoke-NvidiaCacheCleanup -Base $script:Base -LogDir $script:Logs -MaxLogBytes 1KB 6>$null | Out-Null
+
+        Get-Content -LiteralPath "$log.1" -Raw | Should -Match 'old line'
+        Get-Content -LiteralPath $log -Raw | Should -Not -Match 'old line'
+        Get-Content -LiteralPath $log -Raw | Should -Match 'Done\.'
+    }
+
     It 'logs failures and keeps going when a folder cannot be removed' {
         Mock Remove-Item { throw 'file in use' } -ParameterFilter { $LiteralPath -like '*old1' }
         $summary = Invoke-NvidiaCacheCleanup -Base $script:Base -LogDir $script:Logs 6>$null
