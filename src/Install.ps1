@@ -128,13 +128,20 @@ function Install-NccTask {
     )
     Assert-NccAdministrator
 
-    if (Test-Path -LiteralPath $InstallDir) {
-        Assert-NccTrustedInstallDir -Path $InstallDir
-    } else {
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
         Initialize-NccInstallDir -Path $InstallDir
     }
+    # Checked even right after creating it: CreateDirectory silently reuses a
+    # folder that another user managed to create in the meantime.
+    Assert-NccTrustedInstallDir -Path $InstallDir
+
+    # Recreate (not overwrite) our files so they inherit the locked folder ACL.
+    foreach ($own in $script:ScriptFile, $script:MarkerFile) {
+        $path = Join-Path $InstallDir $own
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
     $target = Join-Path $InstallDir $script:ScriptFile
-    Copy-Item -LiteralPath $SourceScript -Destination $target -Force
+    Copy-Item -LiteralPath $SourceScript -Destination $target
     Set-Content -LiteralPath (Join-Path $InstallDir $script:MarkerFile) -Value "Installed $(Get-Date -Format s)"
 
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `

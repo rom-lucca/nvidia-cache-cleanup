@@ -25,7 +25,36 @@ Describe 'Install-NccTask' {
         Mock Test-NccAdministrator { $true }
         # Unit tests stay independent of elevation: the folder is created plainly.
         Mock Initialize-NccInstallDir { New-Item -ItemType Directory -Path $Path | Out-Null }
+        Mock Test-NccLockedAcl { $true }
         Mock Register-ScheduledTask { }
+    }
+
+    # Regression (security): if another user created the folder between the
+    # existence check and the creation, CreateDirectory silently reused it.
+    It 'verifies the folder again right after creating it' {
+        Mock Test-NccLockedAcl { $false }
+
+        { Install-NccTask -SourceScript $script:CleanupPath -InstallDir $script:Dir -TaskName 't' -WeeksInterval 4 } |
+            Should -Throw '*can be modified by non-administrators*'
+        Should -Invoke Initialize-NccInstallDir -Times 1
+        Test-Path (Join-Path $script:Dir 'NvidiaCacheCleanup.ps1') | Should -BeFalse
+        Should -Invoke Register-ScheduledTask -Times 0
+    }
+
+    # Overwriting a file keeps its old ACL; recreating it makes it inherit the
+    # locked folder's rules.
+    It 'recreates its own files instead of overwriting them' {
+        New-Item -ItemType Directory -Path $script:Dir | Out-Null
+        $existing = Join-Path $script:Dir 'NvidiaCacheCleanup.ps1'
+        Set-Content -LiteralPath $existing -Value 'old version'
+        $acl = Get-Acl -LiteralPath $existing
+        $everyone = [Security.Principal.SecurityIdentifier]'S-1-1-0'
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($everyone, 'Modify', 'Allow')))
+        Set-Acl -LiteralPath $existing -AclObject $acl
+
+        Install-NccTask -SourceScript $script:CleanupPath -InstallDir $script:Dir -TaskName 't' -WeeksInterval 4 | Out-Null
+
+        (Get-RuleMap $existing).ContainsKey('S-1-1-0') | Should -BeFalse
     }
 
     It 'refuses to install without administrator rights' {
