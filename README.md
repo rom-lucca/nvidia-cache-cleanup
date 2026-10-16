@@ -72,7 +72,37 @@ Além disso:
 | `-WeeksInterval` | `4` | De quantas em quantas semanas rodar (1 a 52) |
 | `-TaskName` | `NvidiaCacheCleanup` | Nome da tarefa agendada |
 | `-InstallDir` | `C:\ProgramData\NvidiaCacheCleanup` | Onde o script e os logs ficam. Precisa ser uma pasta nova ou de uma instalação anterior |
+| `-RepoUrl` | — | Modo auto-update: clona o repositório e roda sempre a versão mais nova (veja abaixo) |
+| `-Branch` | `main` | Branch acompanhada no modo auto-update |
+| `-SshKeyPath` | — | Chave SSH (deploy key somente leitura) para repositório privado |
 | `-Uninstall` | — | Remove a tarefa e os arquivos da ferramenta (outros arquivos na pasta são preservados) |
+
+### Modo auto-update (opcional)
+
+Por padrão, o instalador **copia** o script, e para atualizar é preciso rodá-lo de novo. No modo auto-update, o instalador clona o repositório, e a cada execução a tarefa faz `git pull` da branch e roda a versão mais nova. Se o pull falhar (sem internet, por exemplo), ela roda a versão que já está no disco e registra o motivo no log. Esse modo exige o [Git para Windows](https://git-scm.com).
+
+> **Atenção:** neste modo, tudo o que entrar na branch passa a rodar como SYSTEM no PC. Só use com um repositório que apenas você controla.
+
+**Repositório público:**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\src\Install.ps1 -RepoUrl https://github.com/<dono>/nvidia-cache-cleanup.git
+```
+
+**Repositório privado.** A tarefa roda como SYSTEM, que não tem as suas credenciais do GitHub, então ela usa uma *deploy key* somente leitura, válida só para esse repositório:
+
+```powershell
+# 1. Gere a chave (sem senha) numa pasta temporária
+ssh-keygen -t ed25519 -N '""' -C "nvidia-cache-cleanup (read-only)" -f "$env:TEMP\ncc_deploy"
+# 2. Cadastre a chave pública no repositório, somente leitura
+gh repo deploy-key add "$env:TEMP\ncc_deploy.pub" --repo <dono>/nvidia-cache-cleanup --title "nvidia-cache-cleanup $env:COMPUTERNAME"
+# 3. Instale; a chave é copiada para C:\ProgramData\NvidiaCacheCleanup\ssh
+powershell -ExecutionPolicy Bypass -File .\src\Install.ps1 -RepoUrl git@github.com:<dono>/nvidia-cache-cleanup.git -SshKeyPath "$env:TEMP\ncc_deploy"
+# 4. Apague a cópia temporária da chave
+Remove-Item "$env:TEMP\ncc_deploy", "$env:TEMP\ncc_deploy.pub"
+```
+
+A chave fica em `ssh\`, uma pasta que só SYSTEM e Administradores conseguem ler. O `known_hosts` vem da API do GitHub (`api.github.com/meta`) por HTTPS, então a identidade do servidor é verificada. Para revogar o acesso, apague a deploy key em *Settings → Deploy keys* do repositório.
 
 ## Desinstalação
 
