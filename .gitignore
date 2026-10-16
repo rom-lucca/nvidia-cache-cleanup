@@ -1,0 +1,15 @@
+# Test and coverage output
+TestResults/
+coverage.xml
+testResults.xml
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# Local logs
+logs/
+*.log
