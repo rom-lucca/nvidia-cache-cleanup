@@ -1,4 +1,4 @@
-﻿# nvidia-cache-cleanup
+# nvidia-cache-cleanup
 
 Limpeza automática dos instaladores de driver antigos que o **NVIDIA app** acumula no disco C: do Windows.
 
@@ -90,6 +90,8 @@ O instalador **recusa** a instalação quando a pasta já existe e:
 - contém arquivos que não são desta ferramenta.
 
 Nesse caso, apague a pasta como Administrador e rode o instalador de novo.
+
+Se usar um `-InstallDir` diferente do padrão, escolha um lugar cuja **pasta-pai** também não possa ser alterada por usuários comuns. Quem pode alterar a pasta-pai consegue renomear a pasta da ferramenta e colocar outra no lugar. O padrão (`C:\ProgramData`) é seguro.
 
 ## Desenvolvimento
 
