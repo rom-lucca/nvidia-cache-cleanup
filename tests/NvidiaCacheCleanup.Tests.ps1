@@ -10,13 +10,15 @@
             [string]$Type,
             [string]$Name,
             [int]$DaysAgo,
-            [switch]$WithPostProcessing
+            [switch]$WithPostProcessing,
+            [switch]$NoInstaller
         )
         $dirs = @(Join-Path $Base "$Type\$Name")
         if ($WithPostProcessing) { $dirs += Join-Path $Base "$Type\post-processing\$Name" }
         foreach ($dir in $dirs) {
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
             Set-Content -LiteralPath (Join-Path $dir 'payload.bin') -Value ('x' * 4096)
+            if (-not $NoInstaller) { Set-Content -LiteralPath (Join-Path $dir 'setup.exe') -Value 'MZ' }
             (Get-Item -LiteralPath $dir).LastWriteTime = (Get-Date).AddDays(-$DaysAgo)
         }
     }
@@ -32,8 +34,8 @@
 Describe 'Get-NccKeepSet' {
     BeforeAll {
         $script:Cutoff = (Get-Date).AddDays(-3)
-        function Get-PkgStub([string]$Name, [int]$DaysAgo) {
-            [pscustomobject]@{ Name = $Name; Date = (Get-Date).AddDays(-$DaysAgo) }
+        function Get-PkgStub([string]$Name, [int]$DaysAgo, [bool]$HasInstaller = $true) {
+            [pscustomobject]@{ Name = $Name; Date = (Get-Date).AddDays(-$DaysAgo); HasInstaller = $HasInstaller }
         }
     }
 
@@ -47,6 +49,13 @@ Describe 'Get-NccKeepSet' {
         $packages = @((Get-PkgStub 'a' 1), (Get-PkgStub 'b' 2))
         $keep = Get-NccKeepSet -Package $packages -Cutoff $script:Cutoff
         $keep | Sort-Object | Should -Be @('a', 'b')
+    }
+
+    # A folder without an installer (e.g. planted by another user, or an
+    # aborted download) must not displace the real newest installer.
+    It 'ignores established packages without an installer when choosing the one to keep' {
+        $packages = @((Get-PkgStub 'real' 30), (Get-PkgStub 'empty' 5 $false))
+        Get-NccKeepSet -Package $packages -Cutoff $script:Cutoff | Should -Be @('real')
     }
 
     It 'returns nothing when there are no packages' {
@@ -63,6 +72,26 @@ Describe 'Get-NccPackage' {
         $packages = Get-NccPackage -Base $base
         $packages.Name | Sort-Object | Should -Be @('c1', 'g1')
         ($packages | Where-Object Name -EQ 'g1').Type | Should -Be 'grd'
+    }
+
+    It 'reports whether each package contains an installer' {
+        $base = Join-Path $TestDrive 'installer-flag'
+        Add-FakePackage -Base $base -Type grd -Name with -DaysAgo 20
+        Add-FakePackage -Base $base -Type grd -Name without -DaysAgo 20 -NoInstaller
+
+        $packages = Get-NccPackage -Base $base
+        ($packages | Where-Object Name -EQ 'with').HasInstaller | Should -BeTrue
+        ($packages | Where-Object Name -EQ 'without').HasInstaller | Should -BeFalse
+    }
+
+    It 'ignores junctions' {
+        $base = Join-Path $TestDrive 'pkg-links'
+        Add-FakePackage -Base $base -Type grd -Name real -DaysAgo 20
+        $outside = Join-Path $TestDrive 'pkg-links-outside'
+        New-Item -ItemType Directory -Path $outside | Out-Null
+        New-Item -ItemType Junction -Path (Join-Path $base 'grd\link') -Target $outside | Out-Null
+
+        (Get-NccPackage -Base $base).Name | Should -Be @('real')
     }
 
     It 'returns nothing when the type folders do not exist' {
@@ -84,6 +113,23 @@ Describe 'Get-NccTarget' {
             (Join-Path $base 'grd\old'),
             (Join-Path $base 'grd\post-processing\old')
         )
+    }
+}
+
+Describe 'Get-NccTarget with links' {
+    # Links inside ota-artifacts could point anywhere; the SYSTEM task must
+    # never act on them, not even to remove the link itself.
+    It 'never targets junctions, in package folders or in post-processing' {
+        $base = Join-Path $TestDrive 'target-links'
+        $outside = Join-Path $TestDrive 'target-links-outside'
+        New-Item -ItemType Directory -Path $outside | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'precious.txt') -Value 'x'
+        Add-FakePackage -Base $base -Type crd -Name old -DaysAgo 50 -WithPostProcessing
+        New-Item -ItemType Junction -Path (Join-Path $base 'crd\link') -Target $outside | Out-Null
+        New-Item -ItemType Junction -Path (Join-Path $base 'crd\post-processing\link') -Target $outside | Out-Null
+
+        $targets = Get-NccTarget -Base $base -Keep @() -Cutoff (Get-Date).AddDays(1)
+        $targets.Name | Sort-Object | Should -Be @('old', 'old')
     }
 }
 
@@ -139,6 +185,15 @@ Describe 'Invoke-NvidiaCacheCleanup' {
         Test-Path (Join-Path $script:Base 'crd\newest') | Should -BeTrue
         Test-Path (Join-Path $script:Base 'crd\post-processing\newest') | Should -BeTrue
         Test-Path (Join-Path $script:Base 'crd\downloading') | Should -BeTrue
+    }
+
+    It 'honours a custom MinAgeDays' {
+        Add-FakePackage -Base $script:Base -Type crd -Name twodays -DaysAgo 2 -WithPostProcessing
+        $summary = Invoke-NvidiaCacheCleanup -Base $script:Base -LogDir $script:Logs -MinAgeDays 1 6>$null
+
+        $summary.Kept | Should -Be @('twodays')
+        Test-Path (Join-Path $script:Base 'crd\newest') | Should -BeFalse
+        Test-Path (Join-Path $script:Base 'crd\twodays') | Should -BeTrue
     }
 
     It 'does nothing when the base folder does not exist' {

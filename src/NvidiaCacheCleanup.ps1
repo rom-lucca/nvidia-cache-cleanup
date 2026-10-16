@@ -53,14 +53,35 @@ function Format-NccGB {
     '{0:N2} GB' -f ($Bytes / 1GB)
 }
 
+function Test-NccLink {
+    param([Parameter(Mandatory)][IO.FileSystemInfo]$Item)
+    [bool]($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
+# Child folders of a type folder (or of its post-processing folder). Links are
+# skipped: ota-artifacts is writable by regular users and the task runs as SYSTEM.
+function Get-NccChildDir {
+    param([Parameter(Mandatory)][string]$Path)
+    Get-ChildItem -LiteralPath $Path -Directory -Force |
+        Where-Object { $_.Name -ne $script:PostProcessing -and -not (Test-NccLink -Item $_) }
+}
+
 function Get-NccPackage {
     param([Parameter(Mandatory)][string]$Base)
     foreach ($type in $script:PackageTypes) {
         $typeDir = Join-Path $Base $type
         if (-not (Test-Path -LiteralPath $typeDir)) { continue }
-        Get-ChildItem -LiteralPath $typeDir -Directory -Force |
-            Where-Object { $_.Name -ne $script:PostProcessing } |
-            ForEach-Object { [pscustomobject]@{ Type = $type; Name = $_.Name; Path = $_.FullName; Date = $_.LastWriteTime } }
+        foreach ($dir in Get-NccChildDir -Path $typeDir) {
+            $installer = Get-ChildItem -LiteralPath $dir.FullName -Recurse -Force -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            [pscustomobject]@{
+                Type         = $type
+                Name         = $dir.Name
+                Path         = $dir.FullName
+                Date         = $dir.LastWriteTime
+                HasInstaller = [bool]$installer
+            }
+        }
     }
 }
 
@@ -70,9 +91,10 @@ function Get-NccKeepSet {
         [Parameter(Mandatory)][datetime]$Cutoff
     )
     # Recent packages may still be downloading, so the newest *established*
-    # package is kept as well: there is always one complete installer left.
+    # package that contains an installer is kept as well.
     $recent = @($Package | Where-Object { $_.Date -gt $Cutoff } | ForEach-Object { $_.Name })
-    $newest = $Package | Where-Object { $_.Date -le $Cutoff } | Sort-Object Date -Descending | Select-Object -First 1
+    $newest = $Package | Where-Object { $_.Date -le $Cutoff -and $_.HasInstaller } |
+        Sort-Object Date -Descending | Select-Object -First 1
     @($recent) + @($newest | ForEach-Object { $_.Name }) | Where-Object { $_ } | Select-Object -Unique
 }
 
@@ -85,9 +107,9 @@ function Get-NccTarget {
     foreach ($type in $script:PackageTypes) {
         $typeDir = Join-Path $Base $type
         if (-not (Test-Path -LiteralPath $typeDir)) { continue }
-        $dirs = @(Get-ChildItem -LiteralPath $typeDir -Directory -Force | Where-Object { $_.Name -ne $script:PostProcessing })
+        $dirs = @(Get-NccChildDir -Path $typeDir)
         $extracted = Join-Path $typeDir $script:PostProcessing
-        if (Test-Path -LiteralPath $extracted) { $dirs += Get-ChildItem -LiteralPath $extracted -Directory -Force }
+        if (Test-Path -LiteralPath $extracted) { $dirs += Get-NccChildDir -Path $extracted }
         $dirs | Where-Object { $Keep -notcontains $_.Name -and $_.LastWriteTime -le $Cutoff }
     }
 }

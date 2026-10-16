@@ -1,4 +1,4 @@
-# nvidia-cache-cleanup
+﻿# nvidia-cache-cleanup
 
 Limpeza automática dos instaladores de driver antigos que o **NVIDIA app** acumula no disco C: do Windows.
 
@@ -30,8 +30,9 @@ Se aparecer bem mais que 3 GB, vale a pena instalar.
 
 | Apaga | Mantém |
 |---|---|
-| Instaladores antigos em `grd\` e `crd\` | O pacote mais recente já completo (para você conseguir atualizar sem baixar de novo) |
+| Instaladores antigos em `grd\` e `crd\` | O pacote mais recente que contém um instalador (para você conseguir atualizar sem baixar de novo) |
 | As cópias descompactadas correspondentes em `post-processing\` | Tudo o que foi modificado nos últimos 3 dias (pode ser um download em andamento) |
+| | Links (junctions/symlinks), que nunca são tocados |
 | | Qualquer coisa fora de `ota-artifacts` (driver instalado, configurações, NVIDIA app) |
 
 Além disso:
