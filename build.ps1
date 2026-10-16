@@ -72,6 +72,9 @@ $config.CodeCoverage.CoveragePercentTarget = $CoverageTarget
 
 $run = Invoke-Pester -Configuration $config
 if ($run.Result -ne 'Passed') {
+    foreach ($test in $run.Failed) {
+        Write-Warning "FAILED: $($test.ExpandedPath) :: $($test.ErrorRecord | Select-Object -First 1)"
+    }
     throw "Tests failed: $($run.FailedCount) failed, $($run.PassedCount) passed."
 }
 $coverage = [math]::Round($run.CodeCoverage.CoveragePercent, 2)
