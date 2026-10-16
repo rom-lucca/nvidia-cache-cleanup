@@ -102,6 +102,10 @@ powershell -ExecutionPolicy Bypass -File .\src\Install.ps1 -RepoUrl git@github.c
 Remove-Item "$env:TEMP\ncc_deploy", "$env:TEMP\ncc_deploy.pub"
 ```
 
+Não use uma URL HTTPS com token embutido (`https://<token>@github.com/...`): a configuração do clone pode ser lida por qualquer usuário do PC.
+
+Se a atualização falhar (chave revogada, sem internet...), a tarefa roda a versão que já está no disco e termina com o código **2**, que aparece no histórico do Agendador de Tarefas. O motivo fica no log.
+
 A chave fica em `ssh\`, uma pasta que só SYSTEM e Administradores conseguem ler. O `known_hosts` vem da API do GitHub (`api.github.com/meta`) por HTTPS, então a identidade do servidor é verificada. Para revogar o acesso, apague a deploy key em *Settings → Deploy keys* do repositório.
 
 ## Desinstalação
