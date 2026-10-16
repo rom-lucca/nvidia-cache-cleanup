@@ -94,6 +94,30 @@ Describe 'Invoke-NccRemote' {
         Invoke-NccRemote -InstallDir $setup.Install 6>$null | Should -Be 1
     }
 
+    It 'uses the git path pinned at install time instead of searching PATH' {
+        Mock Get-NccGitPath { throw 'PATH must not be searched' }
+        $setup = Initialize-RemoteSetup
+        $git = (Get-Command git.exe -CommandType Application | Select-Object -First 1).Source
+
+        Invoke-NccRemote -InstallDir $setup.Install -Git $git 6>$null | Should -Be 0
+    }
+
+    # A credential prompt in a non-interactive SYSTEM session could hang the task.
+    It 'runs git without prompts or credential helpers' {
+        $setup = Initialize-RemoteSetup
+        $record = Join-Path $TestDrive "git-call-$([guid]::NewGuid()).txt"
+        $fakeGit = Join-Path $TestDrive "fake-git-$([guid]::NewGuid()).cmd"
+        Set-Content -LiteralPath $fakeGit -Value "@echo prompt=%GIT_TERMINAL_PROMPT% gcm=%GCM_INTERACTIVE% %*>>`"$record`"`r`n@exit /b 0"
+
+        Invoke-NccRemote -InstallDir $setup.Install -Git $fakeGit 6>$null | Out-Null
+
+        $call = Get-Content -LiteralPath $record | Select-Object -First 1
+        $call | Should -Match 'prompt=0'
+        $call | Should -Match 'gcm=never'
+        $call | Should -Match 'credential\.helper= '
+        $call | Should -Match 'pull --ff-only'
+    }
+
     It 'fails when git is not available' {
         Mock Get-NccGitPath { $null }
         $setup = Initialize-RemoteSetup

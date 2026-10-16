@@ -17,7 +17,9 @@
 param(
     # Defaults to this script's folder (set in the body: Windows PowerShell leaves
     # $PSScriptRoot empty in parameter defaults).
-    [string]$InstallDir
+    [string]$InstallDir,
+    # Absolute path of git.exe pinned by the installer (PATH is not searched then).
+    [string]$Git
 )
 
 function Get-NccGitPath {
@@ -49,8 +51,16 @@ function Sync-NccClone {
     # lets git accept that ownership difference for this one folder.
     $safe = 'safe.directory=' + ($RepoDir -replace '\\', '/')
     $ErrorActionPreference = 'Continue'
-    $output = & $Git -C $RepoDir -c $safe pull --ff-only --quiet 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # No prompts in a non-interactive SYSTEM session: fail fast instead of hanging.
+    $saved = $env:GIT_TERMINAL_PROMPT, $env:GCM_INTERACTIVE
+    $env:GIT_TERMINAL_PROMPT, $env:GCM_INTERACTIVE = '0', 'never'
+    try {
+        $output = & $Git -C $RepoDir -c $safe -c credential.helper= pull --ff-only --quiet 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $env:GIT_TERMINAL_PROMPT, $env:GCM_INTERACTIVE = $saved
+    }
+    if ($code -ne 0) {
         Write-NccRemoteLog -Path $Log -Message "Update failed, running the version on disk: $($output -join ' ')"
         return $false
     }
@@ -60,7 +70,10 @@ function Sync-NccClone {
 }
 
 function Invoke-NccRemote {
-    param([Parameter(Mandatory)][string]$InstallDir)
+    param(
+        [Parameter(Mandatory)][string]$InstallDir,
+        [string]$Git
+    )
     $logDir = Join-Path $InstallDir 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     $log = Join-Path $logDir 'nvidia-cache-cleanup.log'
@@ -70,12 +83,12 @@ function Invoke-NccRemote {
         Write-NccRemoteLog -Path $log -Message "Clone not found: $repo. Reinstall with Install.ps1 -RepoUrl."
         return 1
     }
-    $git = Get-NccGitPath
-    if (-not $git) {
+    if (-not $Git) { $Git = Get-NccGitPath }
+    if (-not $Git) {
         Write-NccRemoteLog -Path $log -Message 'git.exe not found; install Git for Windows.'
         return 1
     }
-    Sync-NccClone -Git $git -RepoDir $repo -Log $log | Out-Null
+    Sync-NccClone -Git $Git -RepoDir $repo -Log $log | Out-Null
 
     $cleanup = Join-Path $repo 'src\NvidiaCacheCleanup.ps1'
     if (-not (Test-Path -LiteralPath $cleanup)) {
@@ -93,7 +106,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     # Any unexpected error must fail the task instead of exiting 0.
     $ErrorActionPreference = 'Stop'
     try {
-        exit (Invoke-NccRemote -InstallDir $InstallDir)
+        exit (Invoke-NccRemote -InstallDir $InstallDir -Git $Git)
     } catch {
         Write-Error -ErrorRecord $_ -ErrorAction Continue
         exit 1

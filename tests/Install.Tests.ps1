@@ -5,6 +5,7 @@
 
     $script:IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
+    $script:InstallerTrust = $script:ProgramFilesTrust
 
     # Account names are localized (e.g. SYSTEM is "SISTEMA" on pt-BR), SIDs are not.
     function ConvertTo-TestSid([string]$Account) {
@@ -184,10 +185,21 @@ Describe 'Install-NccTask -RepoUrl (auto-update from a git remote)' {
         Test-Path (Join-Path $script:Dir 'repo\src\NvidiaCacheCleanup.ps1') | Should -BeTrue
         Test-Path (Join-Path $script:Dir 'Invoke-NccRemote.ps1') | Should -BeTrue
         Test-Path (Join-Path $script:Dir 'NvidiaCacheCleanup.ps1') | Should -BeFalse
+        $git = (Get-Command git.exe -CommandType Application | Select-Object -First 1).Source
         Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter {
-            $Action[0].Arguments -like '*Invoke-NccRemote.ps1*'
+            $Action[0].Arguments -like '*Invoke-NccRemote.ps1*' -and
+            $Action[0].Arguments -like "*-Git `"$git`"*"
         }
         $result.Mode | Should -Match 'auto-update'
+    }
+
+    # The task runs git as SYSTEM: a git.exe in a folder regular users can write
+    # to could be replaced to run code as SYSTEM.
+    It 'refuses a git executable that non-admins can modify' {
+        Mock Test-NccLockedAcl { $false } -ParameterFilter { $AlsoTrust }
+        { Install-NccTask -SourceScript $script:CleanupPath -InstallDir $script:Dir -TaskName 't' `
+                -WeeksInterval 4 -RepoUrl $script:Remote } | Should -Throw '*can be modified by non-administrators*'
+        Should -Invoke Register-ScheduledTask -Times 0
     }
 
     It 'stores the deploy key in a private folder and configures ssh for the clone' {
@@ -203,6 +215,7 @@ Describe 'Install-NccTask -RepoUrl (auto-update from a git remote)' {
         $sshCommand = & git -C (Join-Path $script:Dir 'repo') config core.sshCommand
         $sshCommand | Should -Match 'id_deploy'
         $sshCommand | Should -Match 'StrictHostKeyChecking=yes'
+        $sshCommand | Should -Match 'BatchMode=yes'
     }
 
     It 'refuses -RepoUrl when git is not installed' {
@@ -351,6 +364,12 @@ Describe 'Initialize-NccInstallDir and Test-NccLockedAcl (integration)' {
         }
         Initialize-NccInstallDir -Path $dir -Private
         (Get-RuleMap $dir).Keys | Sort-Object | Should -Be @('S-1-5-18', 'S-1-5-32-544')
+    }
+
+    It 'treats the Git for Windows install folder as admin-only when TrustedInstaller/CREATOR OWNER are trusted' {
+        $git = (Get-Command git.exe -CommandType Application | Select-Object -First 1).Source
+        if ($git -notlike "$env:ProgramFiles\*") { return }  # only meaningful for a standard install
+        Test-NccLockedAcl -Path (Split-Path -Parent $git) -AlsoTrust $script:InstallerTrust | Should -BeTrue
     }
 
     It 'reports a folder as not locked when a non-admin principal can write to it' {

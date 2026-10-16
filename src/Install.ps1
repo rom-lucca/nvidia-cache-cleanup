@@ -41,6 +41,9 @@ $script:SidSystem = 'S-1-5-18'
 $script:SidAdministrators = 'S-1-5-32-544'
 $script:SidUsers = 'S-1-5-32-545'
 $script:TrustedSids = @($script:SidSystem, $script:SidAdministrators)
+# Program Files also lists TrustedInstaller and CREATOR OWNER (inherit-only); neither
+# lets a regular user change the folder.
+$script:ProgramFilesTrust = @('S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464', 'S-1-3-0')
 $script:ScriptFile = 'NvidiaCacheCleanup.ps1'
 $script:RunnerFile = 'Invoke-NccRemote.ps1'
 $script:MarkerFile = '.nvidia-cache-cleanup'
@@ -101,15 +104,29 @@ function Initialize-NccInstallDir {
 }
 
 function Test-NccLockedAcl {
-    param([Parameter(Mandatory)][string]$Path)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string[]]$AlsoTrust = @()
+    )
+    $trusted = $script:TrustedSids + $AlsoTrust
     $acl = Get-Acl -LiteralPath $Path
-    if ($script:TrustedSids -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { return $false }
+    if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { return $false }
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
         $writes = ([int64]$rule.FileSystemRights -band $script:WriteRightsMask) -ne 0
         $allow = $rule.AccessControlType -eq 'Allow'
-        if ($allow -and $writes -and $script:TrustedSids -notcontains $rule.IdentityReference.Value) { return $false }
+        if ($allow -and $writes -and $trusted -notcontains $rule.IdentityReference.Value) { return $false }
     }
     $true
+}
+
+function Assert-NccTrustedGit {
+    param([Parameter(Mandatory)][string]$Git)
+    foreach ($path in $Git, (Split-Path -Parent $Git)) {
+        if (-not (Test-NccLockedAcl -Path $path -AlsoTrust $script:ProgramFilesTrust)) {
+            throw "'$path' can be modified by non-administrators, so the git it provides cannot be " +
+            'run as SYSTEM. Install Git for Windows for all users (Program Files).'
+        }
+    }
 }
 
 function Assert-NccNotLink {
@@ -184,6 +201,7 @@ function Install-NccClone {
     )
     $git = Get-NccGitPath
     if (-not $git) { throw 'Git for Windows is required for -RepoUrl (https://git-scm.com).' }
+    Assert-NccTrustedGit -Git $git
     Remove-NccOwnItem -InstallDir $InstallDir -Name $script:RepoFolder, $script:SshFolder
 
     $config = @()
@@ -194,13 +212,14 @@ function Install-NccClone {
         $knownHosts = Join-Path $sshDir 'known_hosts'
         Copy-Item -LiteralPath $SshKeyPath -Destination $key
         Set-Content -LiteralPath $knownHosts -Value (Get-NccGitHubHostKey) -Encoding ascii
-        $ssh = "ssh -i '$($key -replace '\\', '/')' -o IdentitiesOnly=yes " +
+        $ssh = "ssh -i '$($key -replace '\\', '/')' -o IdentitiesOnly=yes -o BatchMode=yes " +
         "-o UserKnownHostsFile='$($knownHosts -replace '\\', '/')' -o StrictHostKeyChecking=yes"
         $config = @('-c', "core.sshCommand=$ssh")  # stored in the clone's config
     }
     $repo = Join-Path $InstallDir $script:RepoFolder
     Invoke-NccGit -Git $git -Arguments (@('clone', '--quiet', '--single-branch', '--branch', $Branch) +
         $config + @($RepoUrl, $repo))
+    $git
 }
 
 function Install-NccTask {
@@ -226,8 +245,10 @@ function Install-NccTask {
     # Recreate (not overwrite) our files so they inherit the locked folder ACL;
     # this also cleans up what the other mode (copy / auto-update) left behind.
     Remove-NccOwnItem -InstallDir $InstallDir -Name $script:ScriptFile, $script:RunnerFile, $script:MarkerFile
+    $extraArgs = ''
     if ($RepoUrl) {
-        Install-NccClone -InstallDir $InstallDir -RepoUrl $RepoUrl -Branch $Branch -SshKeyPath $SshKeyPath
+        $git = Install-NccClone -InstallDir $InstallDir -RepoUrl $RepoUrl -Branch $Branch -SshKeyPath $SshKeyPath
+        $extraArgs = " -Git `"$git`""  # pinned: never resolve git.exe from PATH as SYSTEM
         $target = Join-Path $InstallDir $script:RunnerFile
         Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $SourceScript) $script:RunnerFile) -Destination $target
         $mode = "auto-update from $RepoUrl ($Branch)"
@@ -240,7 +261,7 @@ function Install-NccTask {
     Set-Content -LiteralPath (Join-Path $InstallDir $script:MarkerFile) -Value "Installed $(Get-Date -Format s)"
 
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$target`""
+        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$target`"$extraArgs"
     $trigger = New-ScheduledTaskTrigger -Weekly -WeeksInterval $WeeksInterval -DaysOfWeek Sunday -At '12:00'
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit (New-TimeSpan -Hours 1)
