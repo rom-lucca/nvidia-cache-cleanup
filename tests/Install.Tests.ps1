@@ -185,7 +185,7 @@ Describe 'Install-NccTask -RepoUrl (auto-update from a git remote)' {
         Test-Path (Join-Path $script:Dir 'repo\src\NvidiaCacheCleanup.ps1') | Should -BeTrue
         Test-Path (Join-Path $script:Dir 'Invoke-NccRemote.ps1') | Should -BeTrue
         Test-Path (Join-Path $script:Dir 'NvidiaCacheCleanup.ps1') | Should -BeFalse
-        $git = (Get-Command git.exe -CommandType Application | Select-Object -First 1).Source
+        $git = Get-NccGitPath  # same rule as the installer (the cmd\git.exe wrapper), not PATH order
         Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter {
             $Action[0].Arguments -like '*Invoke-NccRemote.ps1*' -and
             $Action[0].Arguments -like "*-Git `"$git`"*"
