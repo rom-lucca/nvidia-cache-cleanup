@@ -10,8 +10,9 @@
          in the clone, if any);
       2. runs repo\src\NvidiaCacheCleanup.ps1 in a new process, so the freshly
          pulled version is the one executed.
-    If the update fails (offline, remote unavailable) the version already on
-    disk runs and the failure is logged. The exit code is the cleanup's.
+    If the update fails (offline, remote unavailable, revoked key) the version
+    already on disk runs, the failure is logged and the exit code is 2 when the
+    cleanup itself succeeded; otherwise the exit code is the cleanup's.
 #>
 [CmdletBinding()]
 param(
@@ -88,7 +89,7 @@ function Invoke-NccRemote {
         Write-NccRemoteLog -Path $log -Message 'git.exe not found; install Git for Windows.'
         return 1
     }
-    Sync-NccClone -Git $Git -RepoDir $repo -Log $log | Out-Null
+    $updated = Sync-NccClone -Git $Git -RepoDir $repo -Log $log
 
     $cleanup = Join-Path $repo 'src\NvidiaCacheCleanup.ps1'
     if (-not (Test-Path -LiteralPath $cleanup)) {
@@ -97,6 +98,8 @@ function Invoke-NccRemote {
     }
     $hostExe = (Get-Process -Id $PID).Path
     & $hostExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $cleanup -LogDir $logDir
+    # 2 = cleaned up, but with an old version: keeps update problems visible.
+    if ($LASTEXITCODE -eq 0 -and -not $updated) { return 2 }
     $LASTEXITCODE
 }
 

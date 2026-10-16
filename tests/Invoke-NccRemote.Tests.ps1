@@ -59,13 +59,15 @@ Describe 'Invoke-NccRemote' {
         Get-Ran $setup.Install | Should -Be 'v2'
     }
 
-    It 'runs the version on disk and logs it when the update fails' {
+    # Exit 2 keeps a stale install visible in the task history (e.g. a revoked
+    # deploy key) instead of reporting success forever.
+    It 'runs the version on disk, logs it and exits 2 when the update fails' {
         $setup = Initialize-RemoteSetup
         Remove-Item -LiteralPath $setup.Remote -Recurse -Force
 
         $code = Invoke-NccRemote -InstallDir $setup.Install 6>$null
 
-        $code | Should -Be 0
+        $code | Should -Be 2
         Get-Ran $setup.Install | Should -Be 'v1'
         Get-Content -LiteralPath (Join-Path $setup.Install 'logs\nvidia-cache-cleanup.log') -Raw |
             Should -Match 'Update failed'
