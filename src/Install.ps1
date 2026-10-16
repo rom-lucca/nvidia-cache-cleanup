@@ -50,8 +50,9 @@ $script:MarkerFile = '.nvidia-cache-cleanup'
 $script:LogFolder = 'logs'
 $script:RepoFolder = 'repo'
 $script:SshFolder = 'ssh'
+$script:StageSuffix = '.new'
 $script:OwnItems = @($script:ScriptFile, $script:RunnerFile, $script:MarkerFile, $script:LogFolder,
-    $script:RepoFolder, $script:SshFolder)
+    $script:RepoFolder, $script:SshFolder, "$($script:RepoFolder).new", "$($script:SshFolder).new")
 
 # Any of these bits lets the holder change the folder or what is inside it
 # (includes the generic GENERIC_ALL / GENERIC_WRITE bits used by inherit-only ACEs).
@@ -202,24 +203,49 @@ function Install-NccClone {
     $git = Get-NccGitPath
     if (-not $git) { throw 'Git for Windows is required for -RepoUrl (https://git-scm.com).' }
     Assert-NccTrustedGit -Git $git
-    Remove-NccOwnItem -InstallDir $InstallDir -Name $script:RepoFolder, $script:SshFolder
 
-    $config = @()
-    if ($SshKeyPath) {
-        $sshDir = Join-Path $InstallDir $script:SshFolder
-        Initialize-NccInstallDir -Path $sshDir -Private
-        $key = Join-Path $sshDir 'id_deploy'
-        $knownHosts = Join-Path $sshDir 'known_hosts'
-        Copy-Item -LiteralPath $SshKeyPath -Destination $key
-        Set-Content -LiteralPath $knownHosts -Value (Get-NccGitHubHostKey) -Encoding ascii
-        $ssh = "ssh -i '$($key -replace '\\', '/')' -o IdentitiesOnly=yes -o BatchMode=yes " +
-        "-o UserKnownHostsFile='$($knownHosts -replace '\\', '/')' -o StrictHostKeyChecking=yes"
-        $config = @('-c', "core.sshCommand=$ssh")  # stored in the clone's config
+    # Clone into staging folders; the caller swaps them in only if this succeeds, so a
+    # failed reinstall (bad URL, network, key) leaves the working installation intact.
+    $stageRepo = Join-Path $InstallDir "$($script:RepoFolder)$($script:StageSuffix)"
+    $stageSsh = Join-Path $InstallDir "$($script:SshFolder)$($script:StageSuffix)"
+    Remove-NccOwnItem -InstallDir $InstallDir -Name (Split-Path -Leaf $stageRepo), (Split-Path -Leaf $stageSsh)
+    try {
+        $config = @()
+        if ($SshKeyPath) {
+            Initialize-NccInstallDir -Path $stageSsh -Private
+            Copy-Item -LiteralPath $SshKeyPath -Destination (Join-Path $stageSsh 'id_deploy')
+            Set-Content -LiteralPath (Join-Path $stageSsh 'known_hosts') -Value (Get-NccGitHubHostKey) -Encoding ascii
+            $config = @('-c', "core.sshCommand=$(Get-NccSshCommand -SshDir $stageSsh)")
+        }
+        Invoke-NccGit -Git $git -Arguments (@('clone', '--quiet', '--single-branch', '--branch', $Branch) +
+            $config + @($RepoUrl, $stageRepo))
+        if ($SshKeyPath) {
+            # the clone keeps using the key from its final location
+            $final = Get-NccSshCommand -SshDir (Join-Path $InstallDir $script:SshFolder)
+            Invoke-NccGit -Git $git -Arguments @('-C', $stageRepo, 'config', 'core.sshCommand', $final)
+        }
+    } catch {
+        Remove-NccOwnItem -InstallDir $InstallDir -Name (Split-Path -Leaf $stageRepo), (Split-Path -Leaf $stageSsh)
+        throw
     }
-    $repo = Join-Path $InstallDir $script:RepoFolder
-    Invoke-NccGit -Git $git -Arguments (@('clone', '--quiet', '--single-branch', '--branch', $Branch) +
-        $config + @($RepoUrl, $repo))
     $git
+}
+
+function Get-NccSshCommand {
+    param([Parameter(Mandatory)][string]$SshDir)
+    $key = (Join-Path $SshDir 'id_deploy') -replace '\\', '/'
+    $knownHosts = (Join-Path $SshDir 'known_hosts') -replace '\\', '/'
+    "ssh -i '$key' -o IdentitiesOnly=yes -o BatchMode=yes " +
+    "-o UserKnownHostsFile='$knownHosts' -o StrictHostKeyChecking=yes"
+}
+
+function Complete-NccClone {
+    param([Parameter(Mandatory)][string]$InstallDir)
+    Remove-NccOwnItem -InstallDir $InstallDir -Name $script:RepoFolder, $script:SshFolder
+    foreach ($folder in $script:RepoFolder, $script:SshFolder) {
+        $staged = Join-Path $InstallDir "$folder$($script:StageSuffix)"
+        if (Test-Path -LiteralPath $staged) { Rename-Item -LiteralPath $staged -NewName $folder }
+    }
 }
 
 function Install-NccTask {
@@ -242,12 +268,16 @@ function Install-NccTask {
     # folder that another user managed to create in the meantime.
     Assert-NccTrustedInstallDir -Path $InstallDir
 
+    # The clone (if any) comes first: if it fails, nothing of the current install is touched.
+    if ($RepoUrl) {
+        $git = Install-NccClone -InstallDir $InstallDir -RepoUrl $RepoUrl -Branch $Branch -SshKeyPath $SshKeyPath
+    }
     # Recreate (not overwrite) our files so they inherit the locked folder ACL;
     # this also cleans up what the other mode (copy / auto-update) left behind.
     Remove-NccOwnItem -InstallDir $InstallDir -Name $script:ScriptFile, $script:RunnerFile, $script:MarkerFile
     $extraArgs = ''
     if ($RepoUrl) {
-        $git = Install-NccClone -InstallDir $InstallDir -RepoUrl $RepoUrl -Branch $Branch -SshKeyPath $SshKeyPath
+        Complete-NccClone -InstallDir $InstallDir
         $extraArgs = " -Git `"$git`""  # pinned: never resolve git.exe from PATH as SYSTEM
         $target = Join-Path $InstallDir $script:RunnerFile
         Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $SourceScript) $script:RunnerFile) -Destination $target

@@ -209,13 +209,16 @@ Describe 'Install-NccTask -RepoUrl (auto-update from a git remote)' {
         Install-NccTask -SourceScript $script:CleanupPath -InstallDir $script:Dir -TaskName 't' `
             -WeeksInterval 4 -RepoUrl $script:Remote -SshKeyPath $key | Out-Null
 
-        Should -Invoke Initialize-NccInstallDir -Times 1 -ParameterFilter { $Private -and $Path -like '*\ssh' }
+        # created private as a staging folder, then renamed to ssh\
+        Should -Invoke Initialize-NccInstallDir -Times 1 -ParameterFilter { $Private -and $Path -like '*\ssh.new' }
         Get-Content -LiteralPath (Join-Path $script:Dir 'ssh\id_deploy') | Should -Be 'PRIVATE KEY'
         Get-Content -LiteralPath (Join-Path $script:Dir 'ssh\known_hosts') | Should -Be 'github.com ssh-ed25519 AAAATESTKEY'
         $sshCommand = & git -C (Join-Path $script:Dir 'repo') config core.sshCommand
         $sshCommand | Should -Match 'id_deploy'
         $sshCommand | Should -Match 'StrictHostKeyChecking=yes'
         $sshCommand | Should -Match 'BatchMode=yes'
+        $sshCommand | Should -Not -Match 'ssh\.new'  # points at the final folder, not the staging one
+        @(Get-ChildItem -LiteralPath $script:Dir -Force -Filter '*.new').Count | Should -Be 0
     }
 
     It 'refuses -RepoUrl when git is not installed' {
@@ -234,6 +237,20 @@ Describe 'Install-NccTask -RepoUrl (auto-update from a git remote)' {
         { Install-NccTask -SourceScript $script:CleanupPath -InstallDir $script:Dir -TaskName 't' `
                 -WeeksInterval 4 -RepoUrl (Join-Path $TestDrive 'no-such-repo.git') } | Should -Throw '*git clone*'
         Should -Invoke Register-ScheduledTask -Times 0
+    }
+
+    # Regression (review): a failed reinstall deleted the working installation first.
+    It 'keeps the previous installation when the new clone fails' {
+        Install-NccTask -SourceScript $script:CleanupPath -InstallDir $script:Dir -TaskName 't' -WeeksInterval 4 | Out-Null
+        Install-NccTask -SourceScript $script:CleanupPath -InstallDir $script:Dir -TaskName 't' `
+            -WeeksInterval 4 -RepoUrl $script:Remote | Out-Null
+        $before = @(Get-ChildItem -LiteralPath $script:Dir -Force).Name | Sort-Object
+
+        { Install-NccTask -SourceScript $script:CleanupPath -InstallDir $script:Dir -TaskName 't' `
+                -WeeksInterval 4 -RepoUrl (Join-Path $TestDrive 'gone.git') } | Should -Throw '*git clone*'
+
+        @(Get-ChildItem -LiteralPath $script:Dir -Force).Name | Sort-Object | Should -Be $before
+        Test-Path (Join-Path $script:Dir 'repo\src\NvidiaCacheCleanup.ps1') | Should -BeTrue
     }
 
     It 'switching back to copy mode removes the clone, key and runner' {
