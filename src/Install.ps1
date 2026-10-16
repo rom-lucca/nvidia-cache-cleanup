@@ -122,7 +122,10 @@ function Test-NccLockedAcl {
 
 function Assert-NccTrustedGit {
     param([Parameter(Mandatory)][string]$Git)
-    foreach ($path in $Git, (Split-Path -Parent $Git)) {
+    # The wrapper starts binaries from the whole install (mingw64\bin, usr\bin), so the
+    # Git root is checked too.
+    $folder = Split-Path -Parent $Git
+    foreach ($path in $Git, $folder, (Split-Path -Parent $folder)) {
         if (-not (Test-NccLockedAcl -Path $path -AlsoTrust $script:ProgramFilesTrust)) {
             throw "'$path' can be modified by non-administrators, so the git it provides cannot be " +
             'run as SYSTEM. Install Git for Windows for all users (Program Files).'
@@ -151,12 +154,24 @@ function Assert-NccTrustedInstallDir {
     }
 }
 
+function Resolve-NccGitWrapper {
+    # Git for Windows' cmd\git.exe wrapper sets up the PATH git needs for its own sh/ssh;
+    # mingw64\bin\git.exe run with SYSTEM's (machine) PATH crashes as soon as it needs ssh.
+    param([string]$Found)
+    $candidates = @()
+    if ($Found -match '^(?<root>.+?)\\(?:mingw64\\bin|bin)\\git\.exe$') {
+        $candidates += Join-Path $Matches['root'] 'cmd\git.exe'
+    }
+    $candidates += $Found, (Join-Path $env:ProgramFiles 'Git\cmd\git.exe')
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    $null
+}
+
 function Get-NccGitPath {
     $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($git) { return $git.Source }
-    $default = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
-    if (Test-Path -LiteralPath $default) { return $default }
-    $null
+    Resolve-NccGitWrapper -Found $(if ($git) { $git.Source } else { '' })
 }
 
 function Get-NccGitHubHostKey {
@@ -225,8 +240,13 @@ function Install-NccClone {
             Invoke-NccGit -Git $git -Arguments @('-C', $stageRepo, 'config', 'core.sshCommand', $final)
         }
     } catch {
-        Remove-NccOwnItem -InstallDir $InstallDir -Name (Split-Path -Leaf $stageRepo), (Split-Path -Leaf $stageSsh)
-        throw
+        $failure = $_
+        try {
+            Remove-NccOwnItem -InstallDir $InstallDir -Name (Split-Path -Leaf $stageRepo), (Split-Path -Leaf $stageSsh)
+        } catch {
+            Write-Warning "Could not remove the staging folders: $($_.Exception.Message)"
+        }
+        throw $failure  # the clone error, not a cleanup error
     }
     $git
 }

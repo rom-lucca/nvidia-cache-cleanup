@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Updates the local clone of the repository and runs the cleanup from it.
 
@@ -23,12 +23,24 @@ param(
     [string]$Git
 )
 
+function Resolve-NccGitWrapper {
+    # Same rule as Install.ps1: prefer Git for Windows' cmd\git.exe wrapper, since
+    # mingw64\bin\git.exe with SYSTEM's PATH crashes when it needs ssh.
+    param([string]$Found)
+    $candidates = @()
+    if ($Found -match '^(?<root>.+?)\\(?:mingw64\\bin|bin)\\git\.exe$') {
+        $candidates += Join-Path $Matches['root'] 'cmd\git.exe'
+    }
+    $candidates += $Found, (Join-Path $env:ProgramFiles 'Git\cmd\git.exe')
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    $null
+}
+
 function Get-NccGitPath {
     $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($git) { return $git.Source }
-    $default = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
-    if (Test-Path -LiteralPath $default) { return $default }
-    $null
+    Resolve-NccGitWrapper -Found $(if ($git) { $git.Source } else { '' })
 }
 
 function Write-NccRemoteLog {

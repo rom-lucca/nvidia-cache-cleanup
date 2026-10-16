@@ -266,6 +266,52 @@ Describe 'Install-NccTask -RepoUrl (auto-update from a git remote)' {
     }
 }
 
+Describe 'Resolve-NccGitWrapper / pinned git' {
+    BeforeAll {
+        $script:FakeGit = Join-Path $TestDrive 'FakeGit'
+        foreach ($sub in 'cmd', 'mingw64\bin', 'bin') {
+            New-Item -ItemType Directory -Force -Path (Join-Path $script:FakeGit $sub) | Out-Null
+            Set-Content -LiteralPath (Join-Path $script:FakeGit "$sub\git.exe") -Value 'x'
+        }
+    }
+
+    # Regression (review): mingw64\bin\git.exe run with SYSTEM's PATH crashes as soon
+    # as it needs ssh, so the scheduled pull of a private repository never worked.
+    It 'prefers the cmd\git.exe wrapper of the same Git for Windows install' {
+        Resolve-NccGitWrapper -Found (Join-Path $script:FakeGit 'mingw64\bin\git.exe') |
+            Should -Be (Join-Path $script:FakeGit 'cmd\git.exe')
+        Resolve-NccGitWrapper -Found (Join-Path $script:FakeGit 'bin\git.exe') |
+            Should -Be (Join-Path $script:FakeGit 'cmd\git.exe')
+        Resolve-NccGitWrapper -Found (Join-Path $script:FakeGit 'cmd\git.exe') |
+            Should -Be (Join-Path $script:FakeGit 'cmd\git.exe')
+    }
+
+    It 'keeps another git when there is no wrapper next to it' {
+        $other = Join-Path $TestDrive 'other\git.exe'
+        New-Item -ItemType Directory -Force -Path (Split-Path $other) | Out-Null
+        Set-Content -LiteralPath $other -Value 'x'
+        Resolve-NccGitWrapper -Found $other | Should -BeIn @($other, (Join-Path $env:ProgramFiles 'Git\cmd\git.exe'))
+    }
+
+    It 'pins a git that reaches ssh with only the machine PATH, as SYSTEM gets it (no network)' {
+        $git = Get-NccGitPath
+        $sshDir = Join-Path $TestDrive 'ssh-probe'
+        $savedPath = $env:Path
+        try {
+            $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+            $ErrorActionPreference = 'Continue'
+            # `ssh -V` prints its version and exits without contacting anyone.
+            $output = & $git -c "core.sshCommand=$(Get-NccSshCommand -SshDir $sshDir) -V" `
+                ls-remote git@github.com:example/none.git 2>&1 | Out-String
+            $code = $LASTEXITCODE
+        } finally {
+            $env:Path = $savedPath
+        }
+        $code | Should -Be 128  # a normal git error, not a crash code
+        $output | Should -Match 'OpenSSH'
+    }
+}
+
 Describe 'Get-NccGitHubHostKey' {
     It 'turns the keys published by the GitHub API into known_hosts lines' {
         Mock Invoke-RestMethod { [pscustomobject]@{ ssh_keys = @('ssh-ed25519 AAAA1', 'ecdsa-sha2-nistp256 AAAA2') } }

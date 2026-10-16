@@ -127,6 +127,17 @@ Describe 'Invoke-NccRemote' {
     }
 }
 
+Describe 'Resolve-NccGitWrapper (runner fallback)' {
+    It 'prefers the cmd\git.exe wrapper over mingw64\bin\git.exe' {
+        $root = Join-Path $TestDrive 'FakeGitRunner'
+        foreach ($sub in 'cmd', 'mingw64\bin') {
+            New-Item -ItemType Directory -Force -Path (Join-Path $root $sub) | Out-Null
+            Set-Content -LiteralPath (Join-Path $root "$sub\git.exe") -Value 'x'
+        }
+        Resolve-NccGitWrapper -Found (Join-Path $root 'mingw64\bin\git.exe') | Should -Be (Join-Path $root 'cmd\git.exe')
+    }
+}
+
 Describe 'Invoke-NccRemote.ps1 as a standalone script (end-to-end)' {
     It 'updates and runs from its own folder, propagating the exit code' {
         $setup = Initialize-RemoteSetup
