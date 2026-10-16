@@ -183,5 +183,7 @@ function Invoke-NvidiaCacheCleanup {
 
 # Run only when executed as a script, not when dot-sourced (e.g. by the tests).
 if ($MyInvocation.InvocationName -ne '.') {
-    Invoke-NvidiaCacheCleanup -Base $Base -LogDir $LogDir -MinAgeDays $MinAgeDays -DryRun:$DryRun | Out-Null
+    $result = Invoke-NvidiaCacheCleanup -Base $Base -LogDir $LogDir -MinAgeDays $MinAgeDays -DryRun:$DryRun
+    # Non-zero exit makes failures visible in the scheduled task history.
+    if ($result.Failed -gt 0) { exit 1 }
 }

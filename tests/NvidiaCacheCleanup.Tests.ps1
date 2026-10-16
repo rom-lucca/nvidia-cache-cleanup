@@ -252,4 +252,21 @@ Describe 'NvidiaCacheCleanup.ps1 as a standalone script (end-to-end)' {
         Get-RelativeDir $base | Should -Be $before
         ($output | Out-String) | Should -Match 'DryRun'
     }
+
+    # Regression: the process always exited 0, so the scheduled task history
+    # showed success even when folders could not be removed.
+    It 'exits with code 1 when a folder cannot be removed' {
+        $base = Join-Path $TestDrive 'e2e-fail'
+        $logs = Join-Path $TestDrive 'e2e-fail-logs'
+        Add-FakePackage -Base $base -Type grd -Name old -DaysAgo 100
+        Add-FakePackage -Base $base -Type crd -Name newest -DaysAgo 10
+        $lock = [IO.File]::Open((Join-Path $base 'grd\old\payload.bin'), 'Open', 'Read', 'None')
+        try {
+            $hostExe = (Get-Process -Id $PID).Path
+            & $hostExe -NoProfile -ExecutionPolicy Bypass -File $script:ScriptPath -Base $base -LogDir $logs 2>&1 | Out-Null
+            $LASTEXITCODE | Should -Be 1
+        } finally {
+            $lock.Dispose()
+        }
+    }
 }
